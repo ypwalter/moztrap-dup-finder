@@ -4,6 +4,7 @@ Finding duplicated test cases in MozTrap https://moztrap.mozilla.org
 #Installation 
 
 Run `install.sh` (for Ubuntu)
+
 Please be careful that this script will use "sudo" to acquire the root privileges. In that case, installation might put something that you do not want. Please carefully review the software to be installed. Also, please allow 0.5~1 hour of installing these packages.
 
 # Usage
