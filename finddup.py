@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+import argparse
+import json
 from sklearn.feature_extraction.text import TfidfVectorizer
 import urllib2
 import json
@@ -13,11 +16,13 @@ import logging
 import filters
 from progressbar import ProgressBar
 
-logging.basicConfig(level=logging.INFO)
 
 from config import *
 import output
 
+logging.basicConfig(level=logging.INFO)
+
+#TODO: we should probably do this in the shell script, not here, too slow
 def downloadCaseversions():
     # query = query.replace(" ", "\%20")
     # baseurl = "https://developer.mozilla.org/en-US/search?format=json&q="
@@ -55,7 +60,7 @@ def loadGroundTruth(filename):
                 "lhs_id": case1,
                 "rhs_id": case2,
             })
-            are_dups.append(are_dup)
+            are_dups.append(are_dup) #TODO: change to X/Dup/Merge tags
     return {'ids': ids, 'targets': are_dups}
 
 #caseversions = downloadCaseversions()
@@ -144,6 +149,7 @@ def fit(vectorized_features, targets):
     #print(naive_target.count(False))
     #>>> feature = [[0, 0], [1, 1]]
     #>>> target = [0, 1]
+    # TODO: make the max_depth a command line option
     clf = tree.DecisionTreeClassifier(max_depth=3)
     #clf = clf.fit(vectorized_features, groundtruth['targets'])
     clf = clf.fit(vectorized_features, targets)
@@ -157,6 +163,11 @@ def perdict(caseversions, model):
 
     vect = TfidfVectorizer(min_df=1)
     tfidf = vect.fit_transform(caseversion_texts)
+    # TODO: abstract the pairwise_similarity extraction process
+    # TODO: We need to do something like so we can add/remove features with ease
+    #       for feature in features:
+    #           feat = feature.extract(data)
+    #           features.append(feat)
     pairwise_similarity = tfidf * tfidf.T
 
     #print(pairwise_similarity.shape)
@@ -203,6 +214,8 @@ def perdict(caseversions, model):
     p.done()
 
     return {'ids': case_ids, 'perdictions':model.predict(vectorized_features)}
+
+    # TODO: remove the comment out code below
 
     #print(features)
 
@@ -276,16 +289,15 @@ def perdict(caseversions, model):
 #
 #output.drawGraph(realdups)
 #
-def main(args):
-    if args.mode == 'fit':
-        main_fit()
-    elif args.mode == 'cross-validate':
-        main_cross_validate()
-    elif args.mode == 'perdict':
-        main_perdict()
 
-def main_fit():
-    caseversions = loadLocalCaseversions(trainLocalJson)
+def main_fit(config_file):
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+
+
+    caseversions = loadLocalCaseversions(config['trainLocalJson'])
+    # TODO: the targest show not be isDup = true/false, change it to X/Dup/Merge
+    # tags instead
     vectorized_features, targets = prepare_training_data(caseversions)
     model = fit(vectorized_features, targets)
 
@@ -294,14 +306,16 @@ def main_fit():
     #sudo apt-get install graphviz
     #dot -Tpdf iris.dot -o iris.pdf
     #from sklearn.externals.six import StringIO
+    # TODO: make this an command line option
     with open("output/model.dot", 'w') as f:
         f = tree.export_graphviz(model, out_file=f)
 
-    model_filename = "output/latest_model.pkl"
-    with open(model_filename, 'w') as f:
+    # TODO: make this an command line option
+    #model_filename = "output/latest_model.pkl"
+    with open(config['model_filename'], 'w') as f:
         pickle.dump(model, f)
 
-    logging.info("Model saved to " + model_filename)
+    logging.info("Model saved to " + config['model_filename'])
 
 def main_cross_validate():
     caseversions = loadLocalCaseversions(trainLocalJson)
@@ -312,49 +326,68 @@ def main_cross_validate():
     print(metrics.accuracy_score(targets, predicted))
     print(metrics.classification_report(targets, predicted))
 
-def main_perdict():
-    # TODO: load existing model if provided
-    caseversions = loadLocalCaseversions(trainLocalJson)
-    vectorized_features, targets = prepare_training_data(caseversions)
-    model = fit(vectorized_features, targets)
+def main_perdict(config_file):
+    with open(config_file, 'r') as f:
+        config = json.load(f)
 
+    with open(config['model_filename'], 'r') as f:
+        model = pickle.load(f)
 
-    #Drawing decision tree
-    #sudo apt-get install graphviz
-    #dot -Tpdf iris.dot -o iris.pdf
-    #from sklearn.externals.six import StringIO
-    with open("output/model.dot", 'w') as f:
-        f = tree.export_graphviz(model, out_file=f)
+    logging.info("Loaded model " + config['model_filename'])
 
-    model_filename = "output/latest_model.pkl"
-    with open(model_filename, 'w') as f:
-        pickle.dump(model, f)
-    logging.info("Model saved to " + model_filename)
-
-    predictCaseversions = loadLocalCaseversions(perdictLocalJson)
-    topranks = perdict(predictCaseversions, model) # This can be interrupted by Ctrl+C
+    predictCaseversions = loadLocalCaseversions(config['perdictLocalJson'])
+    # TODO: Rename "topranks", it was named toprank because I used to select the
+    # results with highest similarity score, but we don't use that score
+    # directly right now
+    perdictions = perdict(predictCaseversions, model) # This can be interrupted by Ctrl+C
 
     print("preparing data for saving to file")
-    topranks['perdictions'] = topranks['perdictions'].tolist()
+    perdictions['perdictions'] = perdictions['perdictions'].tolist()
     print("saving to file")
-    outputFilename = 'output/latest_output.json'
-    with open(outputFilename , 'w') as f:
-        json.dump(topranks, f, indent=2)
-    print(outputFilename + " created")
+    # TODO: make this an command line option
+    #outputFilename = 'output/latest_output.json'
+    rawJson = config['perdiction_filename'] + ".raw.json"
+    with open(rawJson, 'w') as f:
+        json.dump(perdictions, f, indent=2)
+    logging.info(rawJson+ " created")
 
-    dups = zip(topranks['ids'], topranks['perdictions'])
+    dups = zip(perdictions['ids'], perdictions['perdictions'])
     dups = filter(lambda x: x[1], dups)
     dups = map(lambda x: x[0], dups)
 
-    print(output.printDups(dups))
+    # TODO: Why do we need this?
+    outputCsv = output.printDups(dups)
+
+    csv_filename = config['perdiction_filename'] + ".csv"
+    with open(csv_filename, 'w') as f:
+        f.writelines(outputCsv)
+    logging.info(csv_filename+ " created")
+
+
+
+def main():
+
+    # TODO: remove this stupid default description
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    subparsers = parser.add_subparsers(dest="action",
+                                       help="use \"[command] -h\" to see help message for individual command")
+
+    parser_fit = subparsers.add_parser('fit')
+    parser_fit.add_argument('config_file', type=str
+                              ,help="Config File JSON")
+
+    parser_perdict = subparsers.add_parser('perdict')
+    parser_perdict.add_argument('config_file', type=str
+                              ,help="Config File JSON")
+    args = parser.parse_args()
+    # TODO: split this into three files
+
+    if args.action == 'fit':
+        main_fit(args.config_file)
+    elif args.action == 'cross-validate':
+        main_cross_validate()
+    elif args.action == 'perdict':
+        main_perdict(args.config_file)
 
 if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument('mode', choices=['fit', 'cross-validate', 'perdict'],
-                        help='The mode you want to learn')
-
-    args = parser.parse_args()
-
-    main(args)
+    main()

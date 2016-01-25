@@ -25,6 +25,7 @@ def drawGraph(topranks):
     plt.savefig("similarity.png") # save as png
     #plt.show()
 
+#TODO: we might not need the printOnOffPairs and printNotDup
 #FIXME: inefficient loop
 def printOnOffPairs(dups):
     for item in dups:
@@ -56,7 +57,11 @@ def printNotDup(notdups, reason):
             ))
 
 
+# TODO: printDups is the main output function for the excel file, rename and
+# refactor this.
 def printDups(dups):
+    # TODO: add fields for user to tag answer and comments
+    lines = []
     for item in dups:
         # print("{0}\t is similiar to\t {1}\t with score\t {2}".format(
         #         item["lhs_id"],
@@ -65,14 +70,18 @@ def printDups(dups):
         #         #caseversions['objects'][item["rhs_id"]]['id'],
         #         item["val"])
         #     ),
-        print("{0}\t{1}".format(
+        line = ("{0}\t{1}".format(
                 item["lhs_id"],
                 item["rhs_id"]
-            )),
+            ))
 
-        print("\thttp://shinglyu.github.io/moztrap-new-ui/diff.html?lhs={0}&rhs={1}".format(
+        line += ("\thttp://shinglyu.github.io/moztrap-new-ui/diff.html?lhs={0}&rhs={1}".format(
                 item["lhs_id"],
                 item["rhs_id"]
                 #caseversions['objects'][item["lhs_id"]]['id'],
                 #caseversions['objects'][item["rhs_id"]]['id'])
             ))
+        line += "\n"
+        lines.append(line)
+    print(lines)
+    return lines
