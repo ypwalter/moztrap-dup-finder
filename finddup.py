@@ -6,12 +6,14 @@ import urllib2
 import json
 import itertools
 from sklearn.feature_extraction import DictVectorizer
+from sklearn.preprocessing import LabelEncoder
 from sklearn import tree
 from sklearn import cross_validation, metrics
 import csv
 import pdb
 import pickle
 import logging
+import os
 
 import filters
 from progressbar import ProgressBar
@@ -35,86 +37,103 @@ def loadLocalCaseversions(filename):
     with open(filename, "r") as f:
         return json.load(f)
 
-def loadGroundTruth(filename):
-    ids = []
-    targets = [] # answers
+def loadGroundTruth(filename, caseversions=[]):
+    existing_case_ids = map(lambda x:str(x['id']), caseversions)
+
+    # TODO: move this parsing part to output.py
     with open(filename, 'r') as csvfile:
         rows = csv.reader(csvfile, delimiter=",", quotechar="\"")
-        for row in rows: # has title row
-            if row[0] == "Dup?":
-                continue # title row
-            if row[0][0] == "Y" or row[0][0] == "y":
-                target = "dup"
-            elif row[1][0] == "Y" or row[1][0] == "y":
-                target = "merge"
-            else:
-                target = "none"
+        gt = output.parseResultCsv(rows)
 
-            case1   = row[9]
-            case2   = row[10]
-            ids.append({
-                "lhs_id": case1,
-                "rhs_id": case2,
-            })
-            targets.append(target) #TODO: change to X/Dup/Merge tags
+    ids = []
+    targets = [] # answers
+    if len(existing_case_ids) > 0:
+        for idx in range(len(gt['ids'])):
+            case1 = gt['ids'][idx]['lhs_id']
+            case2 = gt['ids'][idx]['rhs_id']
+
+            if (case1 in existing_case_ids and case2 in existing_case_ids):
+                targets.append(gt['perdictions'][idx])
+                ids.append(gt['ids'][idx])
+    else:
+        ids = gt['ids']
+        targets = gt['perdictions']
+
     return {'ids': ids, 'perdictions': targets}
 
+def transformTargetLabels(labels, classes):
+    le = LabelEncoder()
+    le.fit(classes)
+    return le.transform(labels), le.classes_
 
 def genAllCombinations(caseversions):
-    return [{'lhs_id': caseversions['objects'][i]['id'], 'rhs_id': caseversions['objects'][j]['id'] } for i, j in itertools.combinations(range(len(caseversions['objects'])),2)]
+    cvs_count = len(caseversions['objects'])
+    logging.info("Found " + str(cvs_count) + " caseversions")
+    comb = ({'lhs_id': str(caseversions['objects'][i]['id']), 'rhs_id': str(caseversions['objects'][j]['id']) } for i, j in itertools.combinations(range(len(caseversions['objects'])),2))
+    logging.info("Generated " + str(cvs_count * (cvs_count - 1 )/2) + " pairs")
+    return comb
+
+def getCombinationSlice(n, combination_iter, step=1):
+    logging.info("Getting " + str(n) + " pairs with sampling step of " + str(step))
+    it = iter(combination_iter)
+    while True:
+        chunk = list(itertools.islice(it, 0, n*step, step))
+        if not chunk:
+            return
+        yield chunk
 
 def extractFeatures(caseversions, selected_pairs):
-    caseversions_sorted_by_id = sorted(caseversions['objects'], key=lambda x: x['id'])
+    #caseversions_sorted_by_id = sorted(caseversions['objects'], key=lambda x: x['id'])
     #print(caseversions_sorted_by_id)
-    idx_from_caseversion_id = dict((str(d['id']), i) for (i, d) in enumerate(caseversions_sorted_by_id))
+    #idx_from_caseversion_id = dict((str(d['id']), i) for (i, d) in enumerate(caseversions_sorted_by_id))
     #TODO: can we reduce the number of cases here?
     #TODO: find the intersection between the groundtruth and the caseversions
-    caseversion_texts = map(lambda x: json.dumps(x), caseversions_sorted_by_id)
+    #caseversion_texts = map(lambda x: json.dumps(x), caseversions_sorted_by_id)
 
-    features = []
+    logging.info("Prepare to extract features from " + str(len(selected_pairs)) + " pairs")
+
 
     counter = 0
 
+    # Extracting similarity related features
+    p = ProgressBar(3)
+    p.update(1)
+    #similarities = filters.calcSimilarity(caseversions, selected_pairs)
     #TODO enable similarity
     #vect = TfidfVectorizer(min_df=1)
     #tfidf = vect.fit_transform(caseversion_texts)
     #pairwise_similarity = tfidf * tfidf.T
 
-    p = ProgressBar(len(selected_pairs))
-    for pair in selected_pairs:
-        # TODO: handle if groundtruth is not in the small set
-        #Extract similarity
-        try:
-            r = idx_from_caseversion_id[str(pair['lhs_id'])]
-            c = idx_from_caseversion_id[str(pair['rhs_id'])]
-            #similarity = pairwise_similarity[r, c] #"tfidf_diff": tfidf[i] - tfidf[j]
+    #p = ProgressBar(len(selected_pairs))
+    # Extracting diff related features
+    diffs = filters.calcDiffs(caseversions, selected_pairs)
 
-            diff  = filters.calcDiff(caseversion_texts[r], caseversion_texts[c])
-            isonoff = filters.isOnOffPairs(diff)
+    p.update(2)
+    isonoffs = map(filters.isOnOffPairs, diffs)
+    p.update(3)
+    isdiffmodules = map(filters.isDifferentModule, diffs)
             #isdiffmodule = filters.isDifferentModule(diff)
 
-        except KeyError:
-            #similarity = 0 # Is this good?
-            isonoff = False
-            #isdiffmodule = False
-            continue
+    # Feature re-formatting
+    def toDict(fields):
+        return {
+            "isonoff": fields[0],
+            "isdiffmodule": fields[1],
+            #"similarity": fields[2]
+        }
 
-        features.append({
-            #"similarity": similarity,
-            "isonoff": isonoff,
-            #"isdiffmodule": isdiffmodule
-        })
-        p.update(counter)
-        counter += 1
-
+    #features = map(toDict, zip(isonoffs, isdiffmodules, similarities))
+    features = map(toDict, zip(isonoffs, isdiffmodules))
     vec = DictVectorizer()
     vectorized_features = vec.fit_transform(features)
-
     p.done()
+
+    #p.done()
     return vectorized_features
 
 
 def fit(vectorized_features, targets):
+    #TODO: move this depth to config
     clf = tree.DecisionTreeClassifier(max_depth=3)
     clf = clf.fit(vectorized_features, targets)
     return clf
@@ -128,17 +147,28 @@ def main_fit(config_file):
 
 
     caseversions = loadLocalCaseversions(config['trainLocalJson'])
-    groundtruth = loadGroundTruth(config['groundtruth_filename'])
-    vectorized_features= extractFeatures(caseversions, groundtruth['ids'])
-    model = fit(vectorized_features, groundtruth['perdictions'])
+    groundtruth = loadGroundTruth(config['groundtruth_filename'], caseversions['objects'])
+    vectorized_features = extractFeatures(caseversions, groundtruth['ids'])
+    labels = ['dup', 'merge', 'none'] #TODO:Move to config
+    transformed_labels, classes = transformTargetLabels(groundtruth['perdictions'],labels)
+    #print(transformed_labels)
+    #print(classes)
+    model = fit(vectorized_features, transformed_labels)
 
 
     #Drawing decision tree
     #sudo apt-get install graphviz
     #dot -Tpdf iris.dot -o iris.pdf
     #from sklearn.externals.six import StringIO
-    with open("output/model.dot", 'w') as f:
-        f = tree.export_graphviz(model, out_file=f)
+    with open(config['model_filename'] + ".dot", 'w') as f:
+        f = tree.export_graphviz(model, out_file=f,
+                                 feature_names=['isonoff', 'isdiffmodule', 'similarity'], #TODO: move this to config, and let extractFeature read this
+                                 class_names=classes
+                                 )
+        #os.system("dot -Tpdf {infile} -o {outfile}".format(
+        #    infile = config['model_filename'] + ".dot",
+        #    outfile = config['model_filename'] + ".pdf",
+        #))
 
     with open(config['model_filename'], 'w') as f:
         pickle.dump(model, f)
@@ -163,31 +193,45 @@ def main_perdict(config_file):
 
     logging.info("Loaded model " + config['model_filename'])
 
+    logging.info("Extracting features")
     predictCaseversions = loadLocalCaseversions(config['perdictLocalJson'])
-    combinations = genAllCombinations(predictCaseversions)
-    vectorized_features = extractFeatures(predictCaseversions, combinations)
-    perdictions = perdict(vectorized_features, model) # This can be interrupted by Ctrl+C
+    comb_it = genAllCombinations(predictCaseversions)
+    # TODO: extract the slice size to config
 
-    answer = {'ids': combinations, 'perdictions': perdictions}
+    labels = ['dup', 'merge', 'none'] #TODO:Move to config
+    # TODO: this does not align with the fit function
+    le = LabelEncoder()
+    le.fit(labels)
+    slice_num = 1
+    for combinations in getCombinationSlice(config['slice_size'],comb_it, step=config.get('sample_step', 1)):
+        vectorized_features = extractFeatures(predictCaseversions, combinations)
+        logging.info("Making perdictions")
+        perdictions = perdict(vectorized_features, model) # This can be interrupted by Ctrl+C
 
-    print("preparing data for saving to file")
-    answer['perdictions'] = answer['perdictions'].tolist()
-    print("saving to file")
-    rawJson = config['perdiction_filename'] + ".raw.json"
-    with open(rawJson, 'w') as f:
-        json.dump(answer, f, indent=2)
-    logging.info(rawJson+ " created")
+        answer = {'ids': combinations, 'perdictions': perdictions}
 
-    dups = zip(answer['ids'], answer['perdictions'])
-    dups = filter(lambda x: x[1], dups)
-    dups = map(lambda x: x[0], dups)
+        logging.info("preparing data for saving to file")
+        answer['perdictions'] = le.inverse_transform(answer['perdictions']).tolist()
+        logging.info("saving to file")
+        rawJson = "{perdiction_filename}_{slice_num}.raw.json".format(
+            perdiction_filename = config['perdiction_filename'],
+            slice_num = str(slice_num)
+        )
+        with open(rawJson, 'w') as f:
+            json.dump(answer, f, indent=2)
+        logging.info(rawJson+ " created")
 
-    outputCsv = output.printDups(dups)
+        outputCsv = output.formatResultCsv(answer)
 
-    csv_filename = config['perdiction_filename'] + ".csv"
-    with open(csv_filename, 'w') as f:
-        f.writelines(outputCsv)
-    logging.info(csv_filename+ " created")
+        csv_filename = "{perdiction_filename}_{slice_num}.csv".format(
+            perdiction_filename = config['perdiction_filename'],
+            slice_num = str(slice_num)
+        )
+        with open(csv_filename, 'w') as f:
+            f.writelines(outputCsv)
+        logging.info(csv_filename+ " created")
+
+        slice_num += 1
 
 def main():
 
